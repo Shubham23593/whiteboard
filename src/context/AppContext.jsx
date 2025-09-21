@@ -26,9 +26,9 @@ const initialState = {
   // Styling
   currentStyle: { ...DEFAULT_STYLE },
   
-  // History for undo/redo
-  history: [],
-  historyIndex: -1,
+  // History for undo/redo - Initialize with empty state
+  history: [{ elements: [] }],
+  historyIndex: 0,
   
   // Panels
   showStylingPanel: false,
@@ -75,9 +75,10 @@ const appReducer = (state, action) => {
       return { ...state, elements: action.payload };
       
     case actionTypes.ADD_ELEMENT:
+      const newElements = [...state.elements, action.payload];
       return {
         ...state,
-        elements: [...state.elements, action.payload]
+        elements: newElements
       };
       
     case actionTypes.UPDATE_ELEMENT:
@@ -130,11 +131,15 @@ const appReducer = (state, action) => {
       return { ...state, currentStyle: { ...state.currentStyle, ...action.payload } };
       
     case actionTypes.ADD_TO_HISTORY:
-      const newHistory = state.history.slice(0, state.historyIndex + 1);
+      // Limit history to prevent memory issues
+      const maxHistorySize = 50;
+      const newHistory = state.history.slice(Math.max(0, state.historyIndex + 1 - maxHistorySize), state.historyIndex + 1);
+      newHistory.push(action.payload);
+      
       return {
         ...state,
-        history: [...newHistory, action.payload],
-        historyIndex: newHistory.length
+        history: newHistory,
+        historyIndex: newHistory.length - 1
       };
       
     case actionTypes.UNDO:
@@ -142,7 +147,7 @@ const appReducer = (state, action) => {
         const previousState = state.history[state.historyIndex - 1];
         return {
           ...state,
-          elements: previousState.elements,
+          elements: [...previousState.elements],
           historyIndex: state.historyIndex - 1
         };
       }
@@ -153,7 +158,7 @@ const appReducer = (state, action) => {
         const nextState = state.history[state.historyIndex + 1];
         return {
           ...state,
-          elements: nextState.elements,
+          elements: [...nextState.elements],
           historyIndex: state.historyIndex + 1
         };
       }

@@ -23,6 +23,9 @@ export const createElement = (type, x1, y1, x2, y2, options = {}) => {
     case ELEMENT_TYPES.TEXT:
       element.text = options.text || '';
       element.baseline = y1;
+      // For text, make sure x2 and y2 are set properly
+      element.x2 = x1 + (element.text.length * element.fontSize * 0.6);
+      element.y2 = y1 + element.fontSize + 10;
       break;
     case ELEMENT_TYPES.FREEDRAW:
       element.points = options.points || [];
@@ -43,7 +46,7 @@ export const getElementBounds = (element) => {
   let maxX = Math.max(x1, x2);
   let maxY = Math.max(y1, y2);
 
-  if (type === ELEMENT_TYPES.FREEDRAW && element.points) {
+  if (type === ELEMENT_TYPES.FREEDRAW && element.points && element.points.length > 0) {
     const xs = element.points.map(point => point.x);
     const ys = element.points.map(point => point.y);
     minX = Math.min(...xs);
@@ -52,25 +55,105 @@ export const getElementBounds = (element) => {
     maxY = Math.max(...ys);
   }
 
+  // Add padding for better selection
+  const padding = Math.max(element.strokeWidth || 1, 5);
+
   return {
-    x: minX,
-    y: minY,
-    width: maxX - minX,
-    height: maxY - minY
+    x: minX - padding,
+    y: minY - padding,
+    width: maxX - minX + (padding * 2),
+    height: maxY - minY + (padding * 2)
   };
 };
 
-// Check if point is inside element
+// Check if point is inside element with better detection
 export const isPointInElement = (x, y, element) => {
   const bounds = getElementBounds(element);
-  const padding = Math.max(element.strokeWidth || 1, 5);
   
-  return (
-    x >= bounds.x - padding &&
-    x <= bounds.x + bounds.width + padding &&
-    y >= bounds.y - padding &&
-    y <= bounds.y + bounds.height + padding
+  // Basic bounds check
+  const inBounds = (
+    x >= bounds.x &&
+    x <= bounds.x + bounds.width &&
+    y >= bounds.y &&
+    y <= bounds.y + bounds.height
   );
+
+  if (!inBounds) return false;
+
+  // More precise detection for different element types
+  switch (element.type) {
+    case ELEMENT_TYPES.TEXT:
+      // For text, use the text bounds more precisely
+      return (
+        x >= element.x1 &&
+        x <= element.x2 &&
+        y >= element.y1 &&
+        y <= element.y2
+      );
+
+    case ELEMENT_TYPES.LINE:
+    case ELEMENT_TYPES.ARROW:
+      // For lines, check distance from line
+      return distanceFromLine(x, y, element.x1, element.y1, element.x2, element.y2) <= 10;
+
+    case ELEMENT_TYPES.FREEDRAW:
+      // For freedraw, check if near any point
+      if (element.points && element.points.length > 0) {
+        return element.points.some(point => 
+          Math.sqrt(Math.pow(x - point.x, 2) + Math.pow(y - point.y, 2)) <= 10
+        );
+      }
+      return false;
+
+    case ELEMENT_TYPES.ELLIPSE:
+      // For ellipse, check if inside the ellipse
+      const centerX = (element.x1 + element.x2) / 2;
+      const centerY = (element.y1 + element.y2) / 2;
+      const radiusX = Math.abs(element.x2 - element.x1) / 2;
+      const radiusY = Math.abs(element.y2 - element.y1) / 2;
+      
+      const normalizedX = (x - centerX) / radiusX;
+      const normalizedY = (y - centerY) / radiusY;
+      
+      return (normalizedX * normalizedX + normalizedY * normalizedY) <= 1;
+
+    default:
+      // For rectangles and diamonds, use bounds
+      return inBounds;
+  }
+};
+
+// Distance from point to line
+const distanceFromLine = (px, py, x1, y1, x2, y2) => {
+  const A = px - x1;
+  const B = py - y1;
+  const C = x2 - x1;
+  const D = y2 - y1;
+
+  const dot = A * C + B * D;
+  const lenSq = C * C + D * D;
+  let param = -1;
+  
+  if (lenSq !== 0) {
+    param = dot / lenSq;
+  }
+
+  let xx, yy;
+
+  if (param < 0) {
+    xx = x1;
+    yy = y1;
+  } else if (param > 1) {
+    xx = x2;
+    yy = y2;
+  } else {
+    xx = x1 + param * C;
+    yy = y1 + param * D;
+  }
+
+  const dx = px - xx;
+  const dy = py - yy;
+  return Math.sqrt(dx * dx + dy * dy);
 };
 
 // Get resize handles for an element

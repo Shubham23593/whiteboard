@@ -1,11 +1,16 @@
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { TOOL_TYPES, ELEMENT_TYPES, CANVAS_STATE, THEMES } from '../types/canvas';
 import { createElement, screenToCanvas, isPointInElement, getElementBounds } from '../utils/canvasUtils';
 import { drawElement } from '../utils/drawingUtils';
+import TextInputModal from './TextInputModal';
 
 const Canvas = () => {
   const canvasRef = useRef(null);
+  const [showTextModal, setShowTextModal] = useState(false);
+  const [textPosition, setTextPosition] = useState(null);
+  const [editingText, setEditingText] = useState(null);
+  const [dragStart, setDragStart] = useState(null);
   const { state, actions } = useApp();
   const {
     elements,
@@ -21,6 +26,13 @@ const Canvas = () => {
     currentStyle,
     viewBackgroundColor
   } = state;
+
+  // Add element to history when it's added
+  const addElementWithHistory = useCallback((element) => {
+    const currentSnapshot = { elements: [...elements] };
+    actions.addToHistory(currentSnapshot);
+    actions.addElement(element);
+  }, [elements, actions]);
 
   // Canvas drawing and event handling
   const draw = useCallback(() => {
@@ -91,6 +103,80 @@ const Canvas = () => {
     context.restore();
   };
 
+  // Handle eraser functionality
+  const handleErase = useCallback((canvasPoint) => {
+    const elementToErase = elements
+      .slice()
+      .reverse()
+      .find(element => !element.isDeleted && isPointInElement(canvasPoint.x, canvasPoint.y, element));
+
+    if (elementToErase) {
+      const currentSnapshot = { elements: [...elements] };
+      actions.addToHistory(currentSnapshot);
+      actions.deleteElement(elementToErase.id);
+    }
+  }, [elements, actions]);
+
+  // Handle text submission
+  const handleTextSubmit = useCallback((text) => {
+    if (textPosition && text) {
+      if (editingText) {
+        // Update existing text
+        const currentSnapshot = { elements: [...elements] };
+        actions.addToHistory(currentSnapshot);
+        actions.updateElement(editingText.id, { text });
+        setEditingText(null);
+      } else {
+        // Create new text
+        const newElement = createElement(
+          ELEMENT_TYPES.TEXT,
+          textPosition.x,
+          textPosition.y,
+          textPosition.x + text.length * 10, // Approximate width
+          textPosition.y + 20, // Approximate height
+          {
+            ...currentStyle,
+            text
+          }
+        );
+        addElementWithHistory(newElement);
+      }
+    }
+    setShowTextModal(false);
+    setTextPosition(null);
+    setEditingText(null);
+  }, [textPosition, currentStyle, addElementWithHistory, editingText, elements, actions]);
+
+  // Move selected elements
+  const moveSelectedElements = useCallback((deltaX, deltaY) => {
+    if (selectedElementIds.length === 0) return;
+
+    const currentSnapshot = { elements: [...elements] };
+    actions.addToHistory(currentSnapshot);
+
+    selectedElementIds.forEach(id => {
+      const element = elements.find(el => el.id === id);
+      if (element) {
+        const updates = {
+          x1: element.x1 + deltaX,
+          y1: element.y1 + deltaY,
+          x2: element.x2 + deltaX,
+          y2: element.y2 + deltaY
+        };
+
+        // Handle freedraw points
+        if (element.type === ELEMENT_TYPES.FREEDRAW && element.points) {
+          updates.points = element.points.map(point => ({
+            x: point.x + deltaX,
+            y: point.y + deltaY
+          }));
+        }
+
+        actions.updateElement(id, updates);
+      }
+    });
+  }, [selectedElementIds, elements, actions]);
+
   // Mouse event handlers
   const handleMouseDown = useCallback((event) => {
     const canvas = canvasRef.current;
@@ -106,19 +192,42 @@ const Canvas = () => {
       return;
     }
 
+    if (activeTool === TOOL_TYPES.ERASER) {
+      handleErase(canvasPoint);
+      return;
+    }
+
     if (activeTool === TOOL_TYPES.SELECT) {
-      // Find element under cursor
+      // Find element under cursor (reverse order to get top element)
       const elementUnderCursor = elements
         .slice()
         .reverse()
         .find(element => !element.isDeleted && isPointInElement(canvasPoint.x, canvasPoint.y, element));
 
       if (elementUnderCursor) {
+        // Handle double-click for text editing
+        if (elementUnderCursor.type === ELEMENT_TYPES.TEXT) {
+          const now = Date.now();
+          const lastClick = canvas.lastClickTime || 0;
+          if (now - lastClick < 300) { // Double click
+            setEditingText(elementUnderCursor);
+            setTextPosition({ x: elementUnderCursor.x1, y: elementUnderCursor.y1 });
+            setShowTextModal(true);
+            return;
+          }
+          canvas.lastClickTime = now;
+        }
+
+        // Select element if not already selected
         if (!selectedElementIds.includes(elementUnderCursor.id)) {
           actions.setSelectedElements([elementUnderCursor.id]);
         }
+        
+        // Start moving
         actions.setCanvasState(CANVAS_STATE.MOVING);
+        setDragStart({ x: canvasPoint.x, y: canvasPoint.y });
       } else {
+        // Clear selection
         actions.setSelectedElements([]);
       }
       return;
@@ -143,21 +252,8 @@ const Canvas = () => {
         }
       );
     } else if (activeTool === TOOL_TYPES.TEXT) {
-      const text = prompt('Enter text:');
-      if (text) {
-        newElement = createElement(
-          ELEMENT_TYPES.TEXT,
-          canvasPoint.x,
-          canvasPoint.y,
-          canvasPoint.x,
-          canvasPoint.y,
-          {
-            ...currentStyle,
-            text
-          }
-        );
-        actions.addElement(newElement);
-      }
+      setTextPosition(canvasPoint);
+      setShowTextModal(true);
       actions.setIsDrawing(false);
       actions.setCanvasState(CANVAS_STATE.IDLE);
       return;
@@ -179,7 +275,7 @@ const Canvas = () => {
     if (newElement) {
       actions.setCurrentElement(newElement);
     }
-  }, [activeTool, camera, elements, selectedElementIds, currentStyle, actions]);
+  }, [activeTool, camera, elements, selectedElementIds, currentStyle, actions, handleErase]);
 
   const handleMouseMove = useCallback((event) => {
     const canvas = canvasRef.current;
@@ -195,6 +291,19 @@ const Canvas = () => {
         x: camera.x + event.movementX,
         y: camera.y + event.movementY
       });
+      return;
+    }
+
+    if (canvasState === CANVAS_STATE.MOVING && dragStart) {
+      const deltaX = canvasPoint.x - dragStart.x;
+      const deltaY = canvasPoint.y - dragStart.y;
+      moveSelectedElements(deltaX, deltaY);
+      setDragStart({ x: canvasPoint.x, y: canvasPoint.y });
+      return;
+    }
+
+    if (activeTool === TOOL_TYPES.ERASER && event.buttons === 1) {
+      handleErase(canvasPoint);
       return;
     }
 
@@ -216,7 +325,7 @@ const Canvas = () => {
       };
       actions.setCurrentElement(updatedElement);
     }
-  }, [canvasState, isDrawing, currentElement, activeTool, camera, actions]);
+  }, [canvasState, isDrawing, currentElement, activeTool, camera, actions, handleErase, dragStart, moveSelectedElements]);
 
   const handleMouseUp = useCallback(() => {
     if (canvasState === CANVAS_STATE.PANNING) {
@@ -224,14 +333,21 @@ const Canvas = () => {
       return;
     }
 
+    if (canvasState === CANVAS_STATE.MOVING) {
+      actions.setCanvasState(CANVAS_STATE.IDLE);
+      setDragStart(null);
+      return;
+    }
+
     if (isDrawing && currentElement) {
-      actions.addElement(currentElement);
+      addElementWithHistory(currentElement);
       actions.setCurrentElement(null);
     }
 
     actions.setIsDrawing(false);
     actions.setCanvasState(CANVAS_STATE.IDLE);
-  }, [canvasState, isDrawing, currentElement, actions]);
+    setDragStart(null);
+  }, [canvasState, isDrawing, currentElement, actions, addElementWithHistory]);
 
   // Wheel event for zooming
   const handleWheel = useCallback((event) => {
@@ -274,7 +390,7 @@ const Canvas = () => {
             break;
           case 'a':
             event.preventDefault();
-            actions.setSelectedElements(elements.map(el => el.id));
+            actions.setSelectedElements(elements.filter(el => !el.isDeleted).map(el => el.id));
             break;
           case 'g':
             event.preventDefault();
@@ -322,12 +438,18 @@ const Canvas = () => {
           break;
         case 'Delete':
         case 'Backspace':
-          selectedElementIds.forEach(id => actions.deleteElement(id));
-          actions.setSelectedElements([]);
+          if (selectedElementIds.length > 0) {
+            const currentSnapshot = { elements: [...elements] };
+            actions.addToHistory(currentSnapshot);
+            selectedElementIds.forEach(id => actions.deleteElement(id));
+            actions.setSelectedElements([]);
+          }
           break;
         case 'Escape':
           actions.setSelectedElements([]);
           actions.setActiveTool(TOOL_TYPES.SELECT);
+          setShowTextModal(false);
+          setEditingText(null);
           break;
         default:
           break;
@@ -384,18 +506,47 @@ const Canvas = () => {
     }
   };
 
+  const getCursorStyle = () => {
+    switch (activeTool) {
+      case TOOL_TYPES.HAND:
+        return canvasState === CANVAS_STATE.PANNING ? 'grabbing' : 'grab';
+      case TOOL_TYPES.ERASER:
+        return 'crosshair';
+      case TOOL_TYPES.TEXT:
+        return 'text';
+      case TOOL_TYPES.SELECT:
+        return canvasState === CANVAS_STATE.MOVING ? 'move' : 'default';
+      default:
+        return 'crosshair';
+    }
+  };
+
   return (
-    <canvas
-      ref={canvasRef}
-      className="absolute inset-0 w-full h-full cursor-crosshair"
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onWheel={handleWheel}
-      style={{
-        cursor: activeTool === TOOL_TYPES.HAND ? 'grab' : 'crosshair'
-      }}
-    />
+    <>
+      <canvas
+        ref={canvasRef}
+        className="absolute inset-0 w-full h-full"
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onWheel={handleWheel}
+        style={{
+          cursor: getCursorStyle()
+        }}
+      />
+      
+      <TextInputModal
+        isOpen={showTextModal}
+        onClose={() => {
+          setShowTextModal(false);
+          setTextPosition(null);
+          setEditingText(null);
+        }}
+        onSubmit={handleTextSubmit}
+        position={textPosition}
+        initialText={editingText?.text || ''}
+      />
+    </>
   );
 };
 

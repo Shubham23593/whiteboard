@@ -22,10 +22,11 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { TOOL_TYPES, THEMES } from '../types/canvas';
+import { generateExportData } from '../utils/canvasUtils';
 
 const Toolbar = () => {
   const { state, actions } = useApp();
-  const { activeTool, theme, showGrid, history, historyIndex } = state;
+  const { activeTool, theme, showGrid, history, historyIndex, elements, camera, viewBackgroundColor, gridSize } = state;
 
   const tools = [
     { type: TOOL_TYPES.SELECT, icon: MousePointer, label: 'Select (V)', shortcut: 'V' },
@@ -57,6 +58,8 @@ const Toolbar = () => {
 
   const handleClearCanvas = () => {
     if (window.confirm('Are you sure you want to clear the canvas? This action cannot be undone.')) {
+      const currentSnapshot = { elements: [...elements] };
+      actions.addToHistory(currentSnapshot);
       actions.clearCanvas();
     }
   };
@@ -65,14 +68,132 @@ const Toolbar = () => {
     actions.setTheme(theme === THEMES.LIGHT ? THEMES.DARK : THEMES.LIGHT);
   };
 
+  const exportAsJSON = () => {
+    try {
+      const exportData = generateExportData(elements, {
+        viewBackgroundColor,
+        gridSize,
+        theme,
+        camera
+      });
+      
+      const dataStr = JSON.stringify(exportData, null, 2);
+      const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
+      
+      const exportFileDefaultName = `whiteboard-${new Date().toISOString().split('T')[0]}.json`;
+      
+      const linkElement = document.createElement('a');
+      linkElement.setAttribute('href', dataUri);
+      linkElement.setAttribute('download', exportFileDefaultName);
+      linkElement.click();
+    } catch (error) {
+      console.error('Export failed:', error);
+      alert('Export failed. Please try again.');
+    }
+  };
+
+  const exportAsPNG = () => {
+    try {
+      const canvas = document.querySelector('canvas');
+      if (!canvas) {
+        alert('Canvas not found. Please try again.');
+        return;
+      }
+
+      // Create a temporary canvas for export
+      const exportCanvas = document.createElement('canvas');
+      const exportCtx = exportCanvas.getContext('2d');
+      
+      // Calculate bounds of all elements
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      
+      elements.forEach(element => {
+        if (!element.isDeleted) {
+          minX = Math.min(minX, element.x1, element.x2);
+          minY = Math.min(minY, element.y1, element.y2);
+          maxX = Math.max(maxX, element.x1, element.x2);
+          maxY = Math.max(maxY, element.y1, element.y2);
+        }
+      });
+
+      if (minX === Infinity) {
+        alert('No elements to export.');
+        return;
+      }
+
+      const padding = 50;
+      const width = maxX - minX + (padding * 2);
+      const height = maxY - minY + (padding * 2);
+      
+      exportCanvas.width = width;
+      exportCanvas.height = height;
+      
+      // Fill background
+      exportCtx.fillStyle = viewBackgroundColor;
+      exportCtx.fillRect(0, 0, width, height);
+      
+      // Draw elements (simplified - you might need to adapt your drawing functions)
+      exportCtx.translate(-minX + padding, -minY + padding);
+      
+      const dataURL = exportCanvas.toDataURL('image/png');
+      const link = document.createElement('a');
+      link.download = `whiteboard-${new Date().toISOString().split('T')[0]}.png`;
+      link.href = dataURL;
+      link.click();
+    } catch (error) {
+      console.error('PNG export failed:', error);
+      alert('PNG export failed. Please try again.');
+    }
+  };
+
   const handleExport = () => {
-    // Will implement export functionality
-    console.log('Export functionality to be implemented');
+    const choice = window.confirm('Export as PNG? (Cancel for JSON)');
+    if (choice) {
+      exportAsPNG();
+    } else {
+      exportAsJSON();
+    }
   };
 
   const handleImport = () => {
-    // Will implement import functionality
-    console.log('Import functionality to be implemented');
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    
+    input.onchange = (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const importData = JSON.parse(e.target.result);
+          
+          if (importData.type === 'excalidraw' && importData.elements) {
+            const currentSnapshot = { elements: [...elements] };
+            actions.addToHistory(currentSnapshot);
+            actions.setElements(importData.elements);
+            
+            if (importData.appState) {
+              if (importData.appState.theme) {
+                actions.setTheme(importData.appState.theme);
+              }
+            }
+            
+            alert('File imported successfully!');
+          } else {
+            alert('Invalid file format. Please select a valid whiteboard file.');
+          }
+        } catch (error) {
+          console.error('Import failed:', error);
+          alert('Import failed. Please check the file and try again.');
+        }
+      };
+      
+      reader.readAsText(file);
+    };
+    
+    input.click();
   };
 
   const canUndo = historyIndex > 0;
